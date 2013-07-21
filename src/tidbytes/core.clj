@@ -4,9 +4,7 @@
            (java.text SimpleDateFormat)
            (java.util Date Locale))
   (:use [clojure.string :only [split] :as string]
-        [clojure.pprint :only [pprint]]
-        [tidbytes.constants :as const])
-  (:gen-class))
+        [tidbytes.constants :as const]))
 
 ;;; ### Records and protocols.
 ;;; Defines a few immutable data types useful for passing around data.
@@ -98,18 +96,6 @@
   (str (.format (SimpleDateFormat. "EEE, dd MMM yyyy HH:mm:ss"
                  Locale/ENGLISH) (Date.)) " GMT"))
 
-(defn- generate-response
-  "Returns a generic response."
-  [request]
-  (Response.
-    200
-    {
-      :date (get-current-date)
-      :server "tidbytes 0.1"
-      :content-type "text/html"
-    }
-    "It just works!"))
-
 (defn- get-all-lines
   [stream]
   (loop [line (.readLine stream)
@@ -161,26 +147,9 @@
   (.close reader)
   nil)
 
-;;; ## API
-;;; Define the public functions of the namespace, forming the API.
-
-;;; Create a new handler.
-(defn create-handler
-  [method url-path function]
-  (fn [^Request request]
-    (function request)))
-
-;;; Create a new response.
-(defn create-response
-  [status-code headers body]
-  (Response.
-    status-code
-    headers
-    body))
-
 ;;; Add a handler to the handler list.
 (defn add-handler
-  "Adds a handler to the list of handlers used in processing requests."
+  "Adds a `handler` to the list of handlers used in processing requests."
   [handler]
   (swap! handlers conj handler))
 
@@ -191,21 +160,17 @@
   (let [server (ServerSocket. 8080)]  
     (println "Server running on port 8080") 
     (while true
-      (let [client (.accept server)
-            reader (-> (.getInputStream client)
-                       (InputStreamReader.)
-                       (BufferedReader.))
-            writer (-> (.getOutputStream client)
-                       (PrintWriter.))
-            request (Request.
-                      (get-request-line reader)
-                      (get-headers reader)
-                      (get-body reader))
-            handler (get-handler request)
-            response (future (handler request))]
-        (future-call (send-response @response writer reader client))))))
-
-;;; The java main method.
-(defn -main []
-  (add-handler generate-response)
-  (start))
+      (let [client (.accept server)]
+        (future-call
+          (let [reader (-> (.getInputStream client)
+                           (InputStreamReader.)
+                           (BufferedReader.))
+                writer (-> (.getOutputStream client)
+                           (PrintWriter.))
+                request (Request.
+                          (get-request-line reader)
+                          (get-headers reader)
+                          (get-body reader))
+                handler (get-handler request)
+                response (handler request)]
+            (send-response response writer reader client)))))))

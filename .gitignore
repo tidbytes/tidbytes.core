@@ -1,6 +1,8 @@
 pom.xml
 *jar
+/doc/
 /lib/
 /classes/
+/target/*
 /targets/
-.lein-deps-sum
+.lein-*
