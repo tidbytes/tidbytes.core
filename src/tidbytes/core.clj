@@ -1,5 +1,5 @@
 (ns tidbytes.core
-  (:import (java.net ServerSocket Socket)
+  (:import (java.net ServerSocket Socket SocketTimeoutException)
            (java.io BufferedReader InputStreamReader PrintWriter)
            (java.text SimpleDateFormat)
            (java.util Date Locale))
@@ -204,26 +204,35 @@
   (send handlers conj handler))
 
 (defn server-shutdown
-  "Gracefully stops the server, serving any pending requests before doing so."
+  "Gracefully stops the server, serving any pending requests before doing so.
+   The server may wait for a maximum of `2000` ms to allow blocking IO to
+   complete safely."
   []
   (send running? (fn [_] nil)))
 
 (defn server-start
   "Starts the server, listening for connections on the given port."
   [port]
-  (let [server (ServerSocket. port)]
+  (let [server (doto (ServerSocket. port)
+                 (.setSoTimeout 2000))]
     (while @running?
       (future-call
-        (with-open [client (.accept server)
-                    reader (-> (.getInputStream client)
-                               (InputStreamReader.)
-                               (BufferedReader.))
-                    writer (-> (.getOutputStream client)
-                               (PrintWriter.))]
-          (let [request (Request.
-                          (get-request-line reader)
-                          (get-headers reader)
-                          (get-body reader))
-                handler (get-handler request)
-                response (handler request)]
-            (write-response response writer)))))))
+        (try
+          (with-open [client (.accept server)
+                      reader (-> (.getInputStream client)
+                                 (InputStreamReader.)
+                                 (BufferedReader.))
+                      writer (-> (.getOutputStream client)
+                                 (PrintWriter.))]
+            (let [request (Request.
+                            (get-request-line reader)
+                            (get-headers reader)
+                            (get-body reader))
+                  handler (get-handler request)
+                  response (handler request)]
+              (write-response response writer)))
+          (catch SocketTimeoutException exception)
+          (catch Exception exception
+            (server-shutdown)
+            (format "Server failed unexpectedly. (%s)"
+                    exception)))))))
