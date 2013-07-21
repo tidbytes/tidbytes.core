@@ -1,8 +1,8 @@
 (ns tidbytes.constants)
 
-;;; ### HTTP response codes
-;;; A full list of all recognized HTTP response status codes for easy look-up.
-(def status-codes
+(def
+  ^{:doc "All the acknowledged HTTP response codes and their corresponding text."}
+  status-codes
   {
     ;; Information
     100 "Continue",
@@ -68,8 +68,12 @@
     499 "Client Closed Request"
   })
 
-;;; #### Convenient definitions.
-;;; HTTP uses specific linebreaks, and using these `def`s should avoid any
-;;; issues.
-(def linebreak "\r\n")
-(def fullbreak "\r\n\r\n")
+(def
+  ^{:doc "A single line break as specified by HTTP."}
+  linebreak
+  "\r\n")
+
+(def
+  ^{:doc "A double line break as specified by HTTP."}
+  fullbreak
+  "\r\n\r\n")

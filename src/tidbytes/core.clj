@@ -6,41 +6,50 @@
   (:use [clojure.string :only [split] :as string]
         [tidbytes.constants :as const]))
 
-;;; ### Records and protocols.
-;;; Defines a few immutable data types useful for passing around data.
-(defrecord RequestLine
+;;; ## Records, Protocols, and Types
+;;; Define all relevant records and protocols used in tibytes.core.
+
+(defrecord
+  RequestLine
   [^String method
    ^String uri
    ^String version])
 
-(defrecord Request
+(defrecord
+  Request
   [^RequestLine request-line
    ^clojure.lang.PersistentArrayMap headers
    ^String body])
 
-(defrecord ResponseLine
+(defrecord
+  ResponseLine
   [^String version
    ^Integer status-code
    ^String reason])
 
-;;; ### The `Responsive` protocol
-;;; `Responsive` is the primary protocol for responses, and anything
-;;; implementing it is capable of being served as an HTTP response.
-(defprotocol Responsive
+(defprotocol
+  Responsive
+  "`Protocol`
+
+   Responsive captures the concept of something tidbytes can serve to a client
+   as a response. Any Responsive type has to provide the following functions:
+
+   - `(status-line [this])`: returns a `ResponseLine`.
+   - `(headers [this])`: returns a map of headers in the form of `:keyword` to
+     `\"string\"`.
+   - `(body [this])`: the body of the response in the form of a string."
   (^ResponseLine status-line [this])
   (^clojure.lang.PersistentArrayMap headers [this])
   (^String body [this]))
 
-;;; ### Protocol extensions
-;;; Extend various types to implement the Response protocol. This makes is
-;;; possible to simply return a string or an integer as a response. The
-;;; interpretation is:
-;;; - An integer is a status code. If application defines a response for this
-;;;   particular status code, that response is returned. Otherwise a response
-;;;   with an empty body, default headers, and the given status code is
-;;;   returned.
-;;; - A string is the body of a response with status code 200 and default
-;;;   headers.
+(deftype Response
+  [status-code headers body]
+  Responsive
+  (status-line [_] (ResponseLine. "HTTP/1.1" status-code
+                                  (status-codes status-code)))
+  (headers [_] headers)
+  (body [_] body))
+
 (extend-protocol Responsive
   Long
   (status-line [this] (ResponseLine. "HTTP/1.1" this (status-codes this)))
@@ -51,20 +60,63 @@
   (headers [_] {})
   (body [this] this))
 
-;;; `Response` is a convenient way to create an instance of `Responsive`, given
-;;; a status code, a map with headers, and a string with the body.
-(deftype Response
-  [status-code headers body]
-  Responsive
-  (status-line [_] (ResponseLine. "HTTP/1.1" status-code
-                                  (status-codes status-code)))
-  (headers [_] headers)
-  (body [_] body))
+;;; Correct the metadata to display more pleasingly in documentation.
 
-;;; `handlers` holds the set of handlers to choose from when a request arrives.
-(def handlers (atom #{}))
+(alter-meta! #'map->RequestLine assoc :no-doc true)
+(alter-meta! #'->RequestLine assoc :doc
+  "`Record`
 
-;;; Define a bunch of private helper functions.
+   A RequestLine is the first line of an HTTP request.
+
+   - method: `:get`, `:post`, or similar HTTP method.
+   - uri: the uri relative to the root domain (f.x. `/path/to/file.html`).
+   - version: the HTTP version (`1.0` or `1.1` in time  of writing).")
+
+(alter-meta! #'map->Request assoc :no-doc true)
+(alter-meta! #'->Request assoc :doc
+  "`Record`
+
+   A Request is the data type passed to handlers. It represents a full HTTP
+   request.
+
+   - request-line: see `->RequestLine`.
+   - headers: a map of headers in the form of `keyword` to `string`.
+   - body: the body of the request in the form of a string.")
+
+(alter-meta! #'map->ResponseLine assoc :no-doc true)
+(alter-meta! #'->ResponseLine assoc :doc
+  "`Record`
+
+   A ResponseLine is the first line of an HTTP response.
+
+   - version: the HTTP version (`1.0` or `1.1` in time  of writing).
+   - status-code: see `tidbytes.constants/status-codes`.
+   - reason: see `tidbytes.constants/status-codes`.")
+
+(alter-meta! #'->Response assoc :doc
+  "`Type`
+
+   A Response is the data type returned by handlers. It represents a full HTTP
+   response.
+
+   - status-code: see `tidbytes.constants/status-codes`.
+   - headers: a map of headers in the form of `keyword` to `string`.
+   - body: the body of the response in the form of a string.")
+
+;;; ## Private functions and data
+;;; The state of the server is stored as agents.
+
+(def
+  ^{:private true}
+  handlers (agent #{}))
+
+(def
+  ^{:private true}
+  running?
+  (agent true))
+
+;;; Plenty of helper functions.
+
 (defn- string-to-keyword
   "Converts the string to a lower-case keyword for headers."
   [string]
@@ -129,8 +181,8 @@
     (get-all-lines reader)
     ""))
 
-(defn- send-response
-  [response writer reader client]
+(defn- write-response
+  [response writer]
   (doto writer
     (.write (str (-> response status-line .version) " "
                  (-> response status-line .status-code) " "
@@ -142,35 +194,36 @@
     (.write const/fullbreak)
     (.write (str (body response)))
     (.flush))
-  (.close client)
-  (.close writer)
-  (.close reader)
   nil)
 
-;;; Add a handler to the handler list.
-(defn add-handler
-  "Adds a `handler` to the list of handlers used in processing requests."
-  [handler]
-  (swap! handlers conj handler))
+;;; ## Public API
 
-;;; Start the server.
-(defn start
-  "Starts the server, listening for HTTP requests until stopped."
+(defn add-handler
+  "Adds a handler to the list of handlers used in processing requests."
+  [handler]
+  (send handlers conj handler))
+
+(defn server-shutdown
+  "Gracefully stops the server, serving any pending requests before doing so."
   []
-  (let [server (ServerSocket. 8080)]  
-    (println "Server running on port 8080") 
-    (while true
-      (let [client (.accept server)]
-        (future-call
-          (let [reader (-> (.getInputStream client)
-                           (InputStreamReader.)
-                           (BufferedReader.))
-                writer (-> (.getOutputStream client)
-                           (PrintWriter.))
-                request (Request.
+  (send running? (fn [_] nil)))
+
+(defn server-start
+  "Starts the server, listening for connections on the given port."
+  [port]
+  (let [server (ServerSocket. port)]
+    (while @running?
+      (future-call
+        (with-open [client (.accept server)
+                    reader (-> (.getInputStream client)
+                               (InputStreamReader.)
+                               (BufferedReader.))
+                    writer (-> (.getOutputStream client)
+                               (PrintWriter.))]
+          (let [request (Request.
                           (get-request-line reader)
                           (get-headers reader)
                           (get-body reader))
                 handler (get-handler request)
                 response (handler request)]
-            (send-response response writer reader client)))))))
+            (write-response response writer)))))))
