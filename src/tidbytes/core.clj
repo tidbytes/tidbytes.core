@@ -108,12 +108,9 @@
 
 (def
   ^{:private true}
-  handlers (agent #{}))
-
-(def
-  ^{:private true}
-  running?
-  (agent true))
+  state (agent {}))
+(send state assoc :handlers #{})
+(send state assoc :running? false)
 
 ;;; Plenty of helper functions.
 
@@ -160,7 +157,7 @@
 
 (defn- get-handler
   [request]
-  (first (sort-by #(fitness request %) @handlers)))
+  (first (sort-by #(fitness request %) (:handlers @state))))
 
 (defn- get-headers
   "Reads the headers section of an HTTP request and returns a key value map."
@@ -198,41 +195,51 @@
 
 ;;; ## Public API
 
-(defn add-handler
-  "Adds a handler to the list of handlers used in processing requests."
-  [handler]
-  (send handlers conj handler))
+(defmacro defhandler
+  "Docstring."
+  [handler-name uri method args & body]
+  `(do (defn ~handler-name ~args ~@body)
+       (send state
+         (fn [state#]
+           (assoc state# :handlers
+             (conj (:handlers state#) ~handler-name))))
+       ``~handler-name))
 
 (defn server-shutdown
   "Gracefully stops the server, serving any pending requests before doing so.
    The server may wait for a maximum of `2000` ms to allow blocking IO to
    complete safely."
   []
-  (send running? (fn [_] nil)))
+  (send state
+    (fn [state]
+      (assoc state :running? false))))
 
 (defn server-start
   "Starts the server, listening for connections on the given port."
   [port]
   (let [server (doto (ServerSocket. port)
                  (.setSoTimeout 2000))]
-    (while @running?
-      (future-call
-        (try
-          (with-open [client (.accept server)
-                      reader (-> (.getInputStream client)
-                                 (InputStreamReader.)
-                                 (BufferedReader.))
-                      writer (-> (.getOutputStream client)
-                                 (PrintWriter.))]
-            (let [request (Request.
-                            (get-request-line reader)
-                            (get-headers reader)
-                            (get-body reader))
-                  handler (get-handler request)
-                  response (handler request)]
-              (write-response response writer)))
-          (catch SocketTimeoutException exception)
-          (catch Exception exception
-            (server-shutdown)
-            (format "Server failed unexpectedly. (%s)"
-                    exception)))))))
+    (if (do (send state #(assoc %1 :running? true))
+            (await-for 2000 state))
+      (while (:running? @state)
+        (future-call
+          (try
+            (with-open [client (.accept server)
+                        reader (-> (.getInputStream client)
+                                   (InputStreamReader.)
+                                   (BufferedReader.))
+                        writer (-> (.getOutputStream client)
+                                   (PrintWriter.))]
+              (let [request (Request.
+                              (get-request-line reader)
+                              (get-headers reader)
+                              (get-body reader))
+                    handler (get-handler request)
+                    response (handler request nil)]
+                (write-response response writer)))
+            (catch SocketTimeoutException exception)
+            (catch Exception exception
+              (server-shutdown)
+              (format "Server failed unexpectedly. (%s)"
+                      exception)))))
+      (throw (Exception. "Could not reach agent. Something is very wrong.")))))
